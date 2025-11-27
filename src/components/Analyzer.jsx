@@ -1,232 +1,204 @@
 // src/components/Analyzer.jsx
 import { useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const defaultCode = `function algoritmo(n) {
-  // Escribe tu código aquí...
-  return 0;
+  // Ejemplos rápidos:
+  // O(1) → return 42;
+  // O(n) → let s = 0; for(let i=0; i<n; i++) s += i; return s;
+  // O(n²) → let c = 0; const m = Math.min(n, 1500); for(let i=0;i<m;i++)for(let j=0;j<m;j++)c++; return c;
+  let suma = 0;
+  for (let i = 0; i < n; i++) suma += i;
+  return suma;
 }`;
 
-function estimarBigO(ratios) {
-  const avg = ratios.reduce((a, b) => a + b, 0) / ratios.length || 1;
-  if (avg < 2.5) return { text: "O(1)", color: "from-emerald-400 to-teal-600" };
-  if (avg < 12) return { text: "O(log n)", color: "from-cyan-400 to-blue-600" };
-  if (avg < 100) return { text: "O(n)", color: "from-lime-400 to-green-600" };
-  if (avg < 1000) return { text: "O(n log n)", color: "from-yellow-400 to-orange-600" };
-  return { text: "O(n²) o mayor", color: "from-red-500 to-rose-700" };
-}
+// 10 entradas óptimas para máxima precisión
+const ENTRADAS = [500, 1000, 2000, 5000, 10000, 20000, 40000, 60000, 80000, 100000];
 
 export default function Analyzer() {
   const [code, setCode] = useState(defaultCode);
   const [result, setResult] = useState(null);
-
-  const analizar = () => {
-    try {
-      let cuerpo = code;
-      const match = code.match(/function\s+algoritmo\s*\([^)]*\)\s*{([\s\S]*)}/);
-      if (match) cuerpo = match[1];
-
-      const fnCode = `
-        try {
-          function algoritmo(n) { ${cuerpo} }
-          const start = performance.now();
-          algoritmo(n);
-          return performance.now() - start;
-        } catch(e) { return -1; }
-      `;
-
-      const medir = new Function('n', fnCode);
-      const forCount = (code.match(/for\s*\(/g) || []).length;
-
-      let ns;
-      if (forCount >= 3) ns = [800, 1200, 1600, 2000];
-      else if (forCount >= 2) ns = [3000, 6000, 10000, 14000];
-      else ns = [50000, 200000, 500000, 1000000];
-
-      const tiempos = [];
-      const MAX_TIME = 800;
-
-      for (const n of ns) {
-        let mejor = Infinity;
-        let intento = 0;
-        while (intento < 10) {
-          const start = performance.now();
-          const t = medir(n);
-          const elapsed = performance.now() - start;
-          if (elapsed > MAX_TIME) {
-            setResult({
-              bigO: "O(n³) o peor",
-              tiempos: tiempos.length > 0 ? tiempos : [{ n, tiempo: 999 }],
-              ratios: ["∞", "∞", "∞"],
-              explosion: true
-            });
-            return;
-          }
-          if (t >= 0 && t < mejor) mejor = t;
-          intento++;
-        }
-        if (mejor === Infinity) mejor = 0.001;
-        tiempos.push({ n, tiempo: Number(mejor.toFixed(3)) });
-      }
-
-      const ratios = [];
-      for (let i = 1; i < tiempos.length; i++) {
-        const ratio = tiempos[i].tiempo / tiempos[i - 1].tiempo;
-        ratios.push(isFinite(ratio) ? ratio : 999);
-      }
-
-      const bigO = estimarBigO(ratios);
-
-      setResult({
-        tiempos,
-        bigO: bigO.text,
-        color: bigO.color,
-        ratios: ratios.map(r => r.toFixed(2))
-      });
-
-    } catch (err) {
-      setResult({ error: "Error: " + err.message });
-    }
-  };
+  const [loading, setLoading] = useState(false);
 
   const borrarTodo = () => {
     setCode(defaultCode);
     setResult(null);
   };
 
+  const analizar = () => {
+    setLoading(true);
+    setResult(null);
+
+    let funcion;
+    try {
+      const wrapper = new Function('n', `
+        "use strict";
+        ${code}
+        return algoritmo(n);
+      `);
+      funcion = wrapper;
+      funcion(10); // prueba rápida
+    } catch (err) {
+      setResult({ error: "Error en el código: " + err.message });
+      setLoading(false);
+      return;
+    }
+
+    const tiempos = [];
+
+    for (const n of ENTRADAS) {
+      let total = 0;
+      let validas = 0;
+
+      for (let r = 0; r < 5; r++) {
+        const inicio = performance.now();
+        try {
+          funcion(n);
+        } catch (e) {
+          break;
+        }
+        const fin = performance.now();
+        const duracion = fin - inicio;
+
+        if (duracion < 2000 && duracion > 0.05) {
+          total += duracion;
+          validas++;
+        }
+      }
+
+      tiempos.push(validas > 0 ? total / validas : 9999);
+    }
+
+    // Regresión log-log simple y efectiva
+    const puntos = tiempos.map((t, i) => ({ n: ENTRADAS[i], t: Math.max(t, 0.1) }));
+    const logN = puntos.map(p => Math.log(p.n));
+    const logT = puntos.map(p => Math.log(p.t));
+
+    const nLog = logN.length;
+    const sumX = logN.reduce((a, b) => a + b, 0);
+    const sumY = logT.reduce((a, b) => a + b, 0);
+    const sumXY = logN.reduce((a, b, i) => a + b * logT[i], 0);
+    const sumX2 = logN.reduce((a, b) => a + b * b, 0);
+
+    const pendiente = (nLog * sumXY - sumX * sumY) / (nLog * sumX2 - sumX * sumX);
+    const exponente = Number(pendiente.toFixed(3));
+
+    // R² rápido
+    const b = (sumY - pendiente * sumX) / nLog;
+    const predicciones = logN.map(x => pendiente * x + b);
+    const mediaY = sumY / nLog;
+    const ssTot = logT.reduce((s, y) => s + (y - mediaY) ** 2, 0);
+    const ssRes = logT.reduce((s, y, i) => s + (y - predicciones[i]) ** 2, 0);
+    const r2 = ssTot === 0 ? 0 : 1 - ssRes / ssTot;
+
+    let bigO = "O(?)";
+    if (exponente < 0.2) bigO = "O(1)";
+    else if (exponente < 0.7) bigO = "O(log n)";
+    else if (exponente < 1.3) bigO = "O(n)";
+    else if (exponente < 1.8) bigO = "O(n log n)";
+    else if (exponente < 2.4) bigO = "O(n²)";
+    else bigO = "O(n³ o mayor)";
+
+    const confianza = r2 > 0.97 ? "Alta" : r2 > 0.85 ? "Media" : "Baja";
+
+    setResult({
+      bigO,
+      exponente,
+      confianza,
+      r2: Number(r2.toFixed(4)),
+      tiempos: tiempos.map(t => t > 9990 ? ">2000" : Number(t.toFixed(1))),
+      nValues: ENTRADAS
+    });
+
+    setLoading(false);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-indigo-950 text-white py-8">
-
-      {/* TÍTULO PRINCIPAL */}
-      <header className="text-center py-10">
-        <h1 className="text-6xl md:text-7xl font-black tracking-tight">
-          <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-violet-500 to-fuchsia-500 drop-shadow-xl">
-            BIG O
-          </span>
-          <span className="block text-4xl md:text-5xl mt-2 text-white/90 font-bold">
-            ANALYZER
+      <header className="text-center py-12">
+        <h1 className="text-8xl font-black">
+          <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-violet-500 to-pink-500 drop-shadow-2xl">
+            BIG O ANALYZER
           </span>
         </h1>
-        <p className="mt-4 text-lg md:text-xl text-purple-300">
-          Complejidad algorítmica al instante
-        </p>
+        <p className="mt-4 text-xl text-purple-300">Simple • Rápido • Preciso • 100% frontend</p>
       </header>
 
-      <div className="max-w-5xl mx-auto px-6 space-y-8">
-
-        {/* EDITOR */}
-        <div className="bg-black/60 rounded-2xl border border-purple-500/40 shadow-2xl overflow-hidden">
-          <div className="bg-gradient-to-r from-purple-600/80 to-pink-600/80 p-4 flex justify-between items-center">
-            <h3 className="text-xl font-bold">Editor JavaScript</h3>
-            <button onClick={borrarTodo} className="bg-red-600 hover:bg-red-700 px-5 py-2 rounded-lg text-sm font-bold transition hover:scale-105">
+      <div className="max-w-5xl mx-auto px-6 space-y-10">
+        <div className="bg-black/60 backdrop-blur-lg rounded-3xl border border-purple-500/40 shadow-2xl overflow-hidden">
+          <div className="bg-gradient-to-r from-purple-700 to-pink-700 p-6 flex justify-between items-center">
+            <h3 className="text-2xl font-bold">Editor de Código</h3>
+            <button onClick={borrarTodo} className="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-xl font-bold transition hover:scale-105">
               Borrar todo
             </button>
           </div>
 
-          <Editor
-            height="400px"
-            defaultLanguage="javascript"
-            value={code}
-            onChange={setCode}
-            theme="vs-dark"
-            options={{
-              fontSize: 14,
-              minimap: { enabled: false },
-              scrollBeyondLastLine: false,
-              wordWrap: "on",
-              automaticLayout: true,
-            }}
-          />
+          <div className="p-6">
+            <Editor
+              height="500px"
+              defaultLanguage="javascript"
+              value={code}
+              onChange={setCode}
+              theme="vs-dark"
+              options={{
+                fontSize: 15,
+                minimap: { enabled: false },
+                wordWrap: "on",
+                automaticLayout: true,
+                folding: true,
+              }}
+            />
+          </div>
 
-          <div className="p-5 bg-gradient-to-r from-emerald-600 to-cyan-600">
+          <div className="p-6 bg-gradient-to-r from-emerald-600 to-cyan-600">
             <button
               onClick={analizar}
-              className="w-full py-4 text-2xl font-bold rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-600 hover:to-cyan-600 transition-all shadow-lg"
+              disabled={loading}
+              className="w-full py-6 text-3xl font-black rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-600 hover:to-cyan-600 transition-all shadow-2xl disabled:opacity-60"
             >
-              ANALIZAR COMPLEJIDAD
+              {loading ? "ANALIZANDO..." : "ANALIZAR COMPLEJIDAD"}
             </button>
           </div>
         </div>
 
-        {/* RESULTADOS - CON ETIQUETA MEJORADA */}
         {result && (
-          <div className="bg-black/60 rounded-2xl border border-purple-500/40 shadow-2xl p-8">
-            
-            {/* ETIQUETA "Resultado" ÉPICA */}
-            <div className="text-center mb-10">
-              <h2 className="inline-block px-10 py-4 bg-gradient-to-r from-purple-600/80 to-pink-600/80 rounded-full text-3xl font-black tracking-wider border-2 border-purple-400/50 shadow-2xl">
-                <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-300 to-purple-300">
-                  RESULTADO
-                </span>
-              </h2>
-            </div>
-
+          <div className="bg-black/70 backdrop-blur-xl rounded-3xl border-2 border-purple-500/60 shadow-3xl p-10">
             {result.error ? (
-              <div className="bg-red-900/70 border border-red-500 text-red-200 p-8 rounded-xl text-center text-lg font-medium">
+              <div className="bg-red-900/80 border-2 border-red-500 p-10 rounded-2xl text-center text-2xl font-bold text-red-200">
                 {result.error}
               </div>
             ) : (
               <>
-                {/* Big O */}
-                <div className="text-center mb-8">
-                  <h3 className={`text-8xl font-black bg-clip-text text-transparent bg-gradient-to-r ${result.color} drop-shadow-lg`}>
+                <div className="text-center mb-12">
+                  <h2 className="text-9xl font-black bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-purple-500 to-pink-500">
                     {result.bigO}
-                  </h3>
-                  {result.explosion && (
-                    <p className="text-2xl mt-4 text-red-400 font-bold">Demasiado lento → O(n³)+</p>
-                  )}
+                  </h2>
+                  <p className="text-4xl mt-6 text-cyan-300 font-bold">Exponente ≈ {result.exponente}</p>
+                  <p className="text-2xl text-purple-300">R² = {result.r2}</p>
+                  <div className={`inline-block mt-6 px-10 py-5 rounded-full text-3xl font-bold border-4 ${
+                    result.confianza === "Alta" ? "bg-green-500/30 border-green-400 text-green-300" :
+                    result.confianza === "Media" ? "bg-yellow-500/30 border-yellow-400 text-yellow-300" :
+                    "bg-red-500/30 border-red-400 text-red-300"
+                  }`}>
+                    Confianza: {result.confianza}
+                  </div>
                 </div>
 
-                {/* GRÁFICO */}
-                <div className="bg-black/40 rounded-xl p-6 border border-purple-500/30">
-                  <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={result.tiempos}>
-                      <XAxis dataKey="n" stroke="#ccc" fontSize={14} />
-                      <YAxis stroke="#ccc" fontSize={14} />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: '#0f0f1e',
-                          border: '2px solid #a855f7',
-                          borderRadius: '12px',
-                          padding: '10px'
-                        }}
-                        labelStyle={{ color: '#a855f7', fontWeight: 'bold', marginBottom: '6px' }}
-                        itemStyle={{ color: '#ffffff' }}
-                        formatter={(value) => [`${Number(value).toFixed(3)} ms`, 'Tiempo']}
-                        labelFormatter={(label) => `n = ${label.toLocaleString()}`}
-                      />
-                      <Bar dataKey="tiempo" radius={[12, 12, 0, 0]}>
-                        {result.tiempos.map((_, i) => (
-                          <Cell key={i} fill={i === result.tiempos.length - 1 ? '#ef4444' : '#10b981'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* RATIOS */}
-                <div className="mt-6 p-6 bg-gradient-to-r from-purple-900/40 to-pink-900/40 rounded-xl text-center border border-purple-500/30">
-                  <p className="text-lg text-purple-300 mb-2">Ratios de crecimiento:</p>
-                  <p className="text-4xl font-mono font-bold text-orange-400">
-                    {result.ratios.join(" → ")}
-                  </p>
+                <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-4">
+                  {result.tiempos.map((t, i) => (
+                    <div key={i} className="bg-black/50 rounded-xl p-4 text-center border border-purple-500/30">
+                      <div className="text-cyan-300 text-xs font-mono">n = {ENTRADAS[i].toLocaleString()}</div>
+                      <div className="text-xl font-bold text-emerald-400 mt-1">
+                        {typeof t === "string" ? t + " ms" : t + " ms"}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}
           </div>
         )}
-
-        {!result && (
-          <div className="text-center py-20 text-purple-400 text-2xl italic opacity-70">
-            Pega tu algoritmo y analiza
-          </div>
-        )}
       </div>
-
-      <footer className="text-center py-8 text-purple-400 text-sm">
-        Esta web solo admite codigo de JS ( Java Script )
-      </footer>
     </div>
   );
 }
