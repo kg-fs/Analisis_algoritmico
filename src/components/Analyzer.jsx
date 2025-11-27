@@ -118,10 +118,10 @@ export default function Analyzer() {
       <header className="text-center py-12">
         <h1 className="text-8xl font-black">
           <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-violet-500 to-pink-500 drop-shadow-2xl">
-            BIG O ANALYZER
+            BIG O Y T(N) ANALYZER
           </span>
         </h1>
-        <p className="mt-4 text-xl text-purple-300">Simple • Rápido • Preciso • 100% frontend</p>
+        <p className="mt-4 text-xl text-purple-300">funciona solo con codigo de Java Script (JS)</p>
       </header>
 
       <div className="max-w-5xl mx-auto px-6 space-y-10">
